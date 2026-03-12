@@ -1,14 +1,14 @@
-# tmux.mcp
+# claude-mux.mcp
 
-A single-tool MCP server that gives AI assistants full control of tmux. One tool, 18 actions, plain text responses.
+A single-tool MCP server that gives Claude Code full control of tmux — terminal multiplexing and cross-session agent coordination. One tool, 27 actions, plain text responses.
 
 Most tmux MCP servers expose 10-15 separate tools. Each tool definition eats context tokens whether you use it or not. This server packs everything into one tool with an `action` parameter. The schema costs ~50 tokens. The server teaches itself to the model through self-describing responses: call an action with missing params and it tells you what it needs.
 
 ## Install
 
 ```bash
-git clone https://github.com/ryanthedev/tmux.mcp.git
-cd tmux.mcp
+git clone https://github.com/ryanthedev/claude-mux.mcp.git
+cd claude-mux.mcp
 npm install
 ```
 
@@ -19,7 +19,7 @@ Add to `~/.claude.json`:
   "mcpServers": {
     "tmux": {
       "command": "node",
-      "args": ["/path/to/tmux.mcp/server.js"]
+      "args": ["/path/to/claude-mux.mcp/server.js"]
     }
   }
 }

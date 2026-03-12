@@ -1,5 +1,5 @@
 #!/bin/bash
-# Auto-inbox hook for tmux.mcp coordination
+# Auto-inbox hook for claude-mux.mcp coordination
 # Checks for new messages addressed to this agent or broadcast to "all"
 # Runs on UserPromptSubmit — injects messages into context passively
 
@@ -8,7 +8,7 @@ if [ -z "$AGENT_NAME" ]; then
   exit 0
 fi
 
-LAST_SEQ_FILE="/tmp/tmux_mcp_inbox_${AGENT_NAME}"
+LAST_SEQ_FILE="/tmp/claude_mux_inbox_${AGENT_NAME}"
 LAST_SEQ=0
 if [ -f "$LAST_SEQ_FILE" ]; then
   LAST_SEQ=$(cat "$LAST_SEQ_FILE")

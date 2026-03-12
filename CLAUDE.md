@@ -33,8 +33,8 @@ Everything routes through one MCP tool → `dispatch()` switch statement → ind
 | Tasks | `tmux set-environment -g MCP_TASK_{name}` | Yes (tmux) |
 | Command tracking | In-memory `commands` Map | No |
 | Watch deltas | In-memory `lastRead` Map | No |
-| Worker hooks | `/tmp/tmux-mcp-{name}/.claude/settings.json` | Cleaned on despawn |
-| Inbox sequence | `/tmp/tmux_mcp_inbox_{name}` | Cleaned on despawn |
+| Worker hooks | `/tmp/claude-mux-{name}/.claude/settings.json` | Cleaned on despawn |
+| Inbox sequence | `/tmp/claude_mux_inbox_{name}` | Cleaned on despawn |
 
 ### Key design patterns
 

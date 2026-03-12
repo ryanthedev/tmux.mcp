@@ -553,7 +553,7 @@ function checkInbox() {
 }
 
 function taskLockPath(taskName) {
-  return `/tmp/tmux_mcp_claim_${taskName}`;
+  return `/tmp/claude_mux_claim_${taskName}`;
 }
 
 function claimTask(text) {
@@ -714,7 +714,7 @@ function spawnWorker(text, target, name) {
   if (!newPane) return "error: could not create worker window";
 
   // setup hooks in a temp workspace
-  const workDir = `/tmp/tmux-mcp-${workerName}`;
+  const workDir = `/tmp/claude-mux-${workerName}`;
   mkdirSync(workDir, { recursive: true });
   setupWorkerHooks(workerName, workDir);
 
@@ -746,7 +746,7 @@ function spawnWorkerPersist(text, target, name) {
   const newPane = createWorkerWindow(session, workerName);
   if (!newPane) return "error: could not create worker window";
 
-  const workDir = `/tmp/tmux-mcp-${workerName}`;
+  const workDir = `/tmp/claude-mux-${workerName}`;
   mkdirSync(workDir, { recursive: true });
   setupWorkerHooks(workerName, workDir);
 
@@ -777,7 +777,7 @@ function spawnTeammate(text, target, name) {
   if (!newPane) return "error: could not create worker window";
 
   // for teammates, setup hooks in the target repo if provided, else temp dir
-  const workDir = target && target.includes("/") ? target : `/tmp/tmux-mcp-${workerName}`;
+  const workDir = target && target.includes("/") ? target : `/tmp/claude-mux-${workerName}`;
   if (!target || !target.includes("/")) {
     mkdirSync(workDir, { recursive: true });
   }
@@ -808,11 +808,11 @@ function despawnWorker(target) {
   run("set-environment", "-g", "-u", `${AGENT_PREFIX}${pane}`);
 
   // clean up temp workspace and hooks
-  const tmpDir = `/tmp/tmux-mcp-${agentName}`;
+  const tmpDir = `/tmp/claude-mux-${agentName}`;
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 
   // clean up inbox sequence tracker
-  try { rmSync(`/tmp/tmux_mcp_inbox_${agentName}`, { force: true }); } catch {}
+  try { rmSync(`/tmp/claude_mux_inbox_${agentName}`, { force: true }); } catch {}
 
   // kill the window
   const window = pane.replace(/\.\d+$/, "");
@@ -1079,7 +1079,7 @@ const ALL_ACTIONS = [
   "spawn", "spawn-persist", "teammate", "despawn", "worker-result",
 ];
 
-const server = new McpServer({ name: "tmux", version: "0.4.0" });
+const server = new McpServer({ name: "claude-mux", version: "0.5.0" });
 
 server.tool(
   "tmux",
