@@ -1,8 +1,8 @@
 # claude-mux.mcp
 
-A single-tool MCP server that gives Claude Code full control of tmux — terminal multiplexing and cross-session agent coordination. One tool, 27 actions, plain text responses.
+MCP server for tmux. One tool, 27 actions, plain text. Gives Claude Code terminal control and multi-agent coordination through tmux sessions.
 
-Most tmux MCP servers expose 10-15 separate tools. Each tool definition eats context tokens whether you use it or not. This server packs everything into one tool with an `action` parameter. The schema costs ~50 tokens. The server teaches itself to the model through self-describing responses: call an action with missing params and it tells you what it needs.
+Other tmux MCP servers expose 10-15 separate tools. Each definition sits in the system prompt and costs tokens on every message. This server packs everything into a single `tmux` tool with an `action` parameter. Schema cost: ~50 tokens. Call an action with missing params and it tells you what it needs.
 
 ## Install
 
@@ -36,10 +36,7 @@ tmux()
 → you are here: main:0.1 (session: main)
 
   tmux actions:
-    list, session, read, watch, send, type,
-    sendwait, typewait, exec, result,
-    new-session, kill-session, new-window, kill-window,
-    split, kill-pane, rename, layout
+    list, session, read, tail, watch, send, type, ...
 ```
 
 Call an action without required params for its help:
@@ -49,7 +46,6 @@ tmux(action: "exec")
 → exec: run command with marker-based tracking
     params: target (session:win.pane), text (command to run)
     returns a commandId — use 'result' to check status/output/exit code
-    example: action:exec target:main:0.0 text:npm test
 ```
 
 The model learns the tool by using it. No upfront documentation cost.
@@ -61,8 +57,9 @@ The model learns the tool by using it. No upfront documentation cost.
 | Action | What it does |
 |--------|-------------|
 | `list` | All sessions. Named ones show windows; numbered ones get a one-line summary. |
-| `session` | One session in detail, with a preview of each pane's last visible line. |
-| `read` | Capture pane output. Set `lines` for history depth (default 100). |
+| `session` | One session in detail, previewing each pane's last visible line. |
+| `read` | Capture pane output. `lines` sets history depth (default 100). |
+| `tail` | Last N lines, no pagination. Quick look at what just happened. |
 | `watch` | Delta since last read. Only new lines come back. |
 | `layout` | Every pane across all sessions with dimensions and running process. |
 
@@ -72,9 +69,9 @@ The model learns the tool by using it. No upfront documentation cost.
 |--------|-------------|
 | `send` | Space-separated key tokens: `Escape :q! Enter`, `C-c`, `Down Down Enter`. |
 | `type` | Literal text, spaces preserved. No Enter appended. |
-| `sendwait` | Send keys, then poll until a shell prompt appears or output stops changing. Returns the delta. |
-| `typewait` | Type literal text + Enter, then wait. One call for "run this command and show me what happened." |
-| `exec` | Wraps a command in start/done markers, returns a `commandId`. Non-blocking. |
+| `sendwait` | Send keys, poll until prompt appears or output settles. Returns the delta. |
+| `typewait` | Type literal text + Enter, then wait. One call for "run this and show me what happened." |
+| `exec` | Wrap a command in start/done markers, return a `commandId`. Non-blocking. |
 | `result` | Check a tracked command's status, exit code, and output by `commandId`. |
 
 ### Manage
@@ -89,11 +86,38 @@ The model learns the tool by using it. No upfront documentation cost.
 | `kill-pane` | Kill a pane. |
 | `rename` | Rename a window. |
 
+### Coordinate
+
+Cross-session agent messaging and task ownership. All state lives in tmux global environment and named buffers.
+
+| Action | What it does |
+|--------|-------------|
+| `register` | Identify yourself by name. Stored globally so other agents can find you. |
+| `unregister` | Remove your registration. |
+| `who` | List all registered agents across all sessions. |
+| `post` | Message an agent by name, or `"all"` for broadcast. |
+| `inbox` | Check for new messages. |
+| `claim` | Take a task. Atomic file lock prevents two agents from claiming the same one. |
+| `complete` | Mark a task done, release the lock. |
+| `tasks` | List all tasks with owner and status. |
+
+### Workers
+
+Spawn Claude Code instances as coordinating agents. Each worker gets a name, a team roster, and auto-injected inbox hooks so messages arrive without polling.
+
+| Action | What it does |
+|--------|-------------|
+| `spawn` | One-shot `claude -p`. Auto-closes when done, captures output to a tmux buffer. |
+| `spawn-persist` | Same, but the window stays open for inspection. |
+| `teammate` | Interactive `claude` session. Stays alive for ongoing coordination. |
+| `despawn` | Kill a worker, clean up registration and temp files. |
+| `worker-result` | Read a completed worker's captured output. |
+
 ## Design choices
 
-**One tool, not thirteen.** Tool definitions live in the system prompt and cost tokens on every message. Thirteen tools with typed schemas run 1000+ tokens of constant overhead. One tool with an action enum: ~50. The help text lives server-side, returned only when requested.
+**One tool, not twenty-seven.** Tool definitions cost tokens on every message. Twenty-seven separate tools with typed schemas: 2000+ tokens of constant overhead. One tool with an action enum: ~50. Help text lives server-side, returned only when requested.
 
-**Plain text, not JSON.** Every response is plain text. JSON keys, braces, and quotes add tokens without adding meaning for the model. A `list` call returns something like:
+**Plain text, not JSON.** A `list` call returns:
 
 ```
 main/
@@ -103,17 +127,19 @@ main/
 12 unnamed sessions (23-34)
 ```
 
-Not a nested object with `sessions[].windows[].name`.
+Not a nested object with `sessions[].windows[].name`. JSON braces and quotes add tokens without helping the model parse.
 
-**Self-awareness.** The server reads `$TMUX_PANE` on startup and reports `you are here: main:0.1` in every listing. So the model knows which pane is itself, won't read its own output, and can scope "this session" without guessing.
+**Self-awareness.** The server reads `$TMUX_PANE` on startup and reports `you are here: main:0.1` in every listing. The model knows which pane is itself, won't read its own output, and can scope "this session" without guessing.
 
-**Pagination.** Responses longer than 10 lines get paginated. The model sees the first page and a hint: `page 1/8 (79 lines) — pass page:2 for more`. Override with `pageSize` per request. This keeps context tight when listing 30+ sessions.
+**Pagination.** Responses longer than 50 lines get paginated, newest first. Page 1 is the most recent output. `pageSize` overrides the default per request.
 
-**`type` vs `send`.** `send` splits on spaces and treats each token as a tmux key name. Good for `Escape :q! Enter`, but it destroys prose. `type` uses tmux's `-l` flag to send literal text with spaces intact. Two actions because the model kept mangling sentences through `send`.
+**`type` vs `send`.** `send` splits on spaces and treats each token as a tmux key name. Good for `Escape :q! Enter`, but it destroys prose. `type` sends literal text with spaces intact. Two actions because the model kept mangling sentences through `send`.
 
-**`exec`/`result` for long commands.** `sendwait` blocks for up to 30 seconds, which works for quick commands. `exec` drops start/done markers around the command, returns immediately with a `commandId`, and `result` checks on it later. The markers capture the exact output and exit code. Auto-detects zsh, bash, or fish for the exit code variable. Commands expire after 10 minutes.
+**`exec`/`result` for long commands.** `sendwait` blocks for up to 30 seconds. `exec` drops start/done markers around the command, returns a `commandId` immediately, and `result` checks on it later. Markers capture exact output and exit code. Auto-detects zsh, bash, or fish. Commands expire after 10 minutes.
 
-**Completion detection.** `sendwait` and `typewait` poll every 500ms. Two signals: a shell prompt (`❯`, `$`, `#`, `%`) means the command finished; output unchanged for 2 seconds means it settled. Prompt detection catches the common case fast. Quiesce handles TUIs. 30-second timeout as a ceiling.
+**Completion detection.** `sendwait` and `typewait` poll every 500ms. A shell prompt (`❯`, `$`, `#`, `%`) means the command finished. Output unchanged for 2 seconds means it settled. 30-second timeout as a ceiling.
+
+**Atomic task claiming.** `claim` uses `O_EXCL` file creation so two agents racing for the same task can't both win. `complete` releases the lock.
 
 ## Parameters
 
@@ -121,11 +147,12 @@ Not a nested object with `sessions[].windows[].name`.
 |-------|------|---------|
 | `action` | string (enum) | All calls |
 | `target` | string | Most actions. Format: `session:window.pane` |
-| `text` | string | send, type, exec, rename, new-session, new-window, split |
-| `lines` | number | read, watch, sendwait, typewait (history depth, default 100) |
-| `page` | number | Any action (pagination, default 1) |
-| `pageSize` | number | Any action (override default of 10) |
+| `text` | string | send, type, exec, rename, new-session, new-window, split, post, claim, complete, spawn, teammate |
+| `lines` | number | read, tail, watch, sendwait, typewait (history depth) |
+| `page` | number | Any action (pagination, default 1 = newest) |
+| `pageSize` | number | Any action (override default of 50) |
 | `commandId` | string | result |
+| `name` | string | spawn, spawn-persist, teammate (agent name) |
 
 ## License
 
