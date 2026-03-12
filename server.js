@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { execFileSync } from "child_process";
 import { randomUUID } from "crypto";
-import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, unlinkSync } from "fs";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -15,7 +15,7 @@ const PROMPT_PATTERNS = [/[❯$#%>]\s*$/, /^\s*\$\s*$/, /\)\s*[❯$#%>]\s*$/];
 const POLL_INTERVAL = 500;
 const QUIESCE_TIME = 2000;
 const MAX_WAIT = 30000;
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 50;
 const CMD_TTL = 600000; // 10 min
 
 // --- helpers ---
@@ -25,9 +25,11 @@ function paginate(text, page = 1, pageSize = PAGE_SIZE) {
   if (lines.length <= pageSize) return text;
   const totalPages = Math.ceil(lines.length / pageSize);
   const p = Math.max(1, Math.min(page, totalPages));
-  const start = (p - 1) * pageSize;
-  const slice = lines.slice(start, start + pageSize);
-  return `${slice.join("\n")}\n--- page ${p}/${totalPages} (${lines.length} lines) ---${p < totalPages ? `\ntip: pass page:${p + 1} for more` : ""}`;
+  // page 1 = most recent (bottom), higher pages = older (top)
+  const end = lines.length - (p - 1) * pageSize;
+  const start = Math.max(0, end - pageSize);
+  const slice = lines.slice(start, end);
+  return `${slice.join("\n")}\n--- page ${p}/${totalPages} (${lines.length} lines, newest first) ---${p < totalPages ? `\ntip: pass page:${p + 1} for older` : ""}`;
 }
 
 function getActivePane() {
@@ -184,6 +186,17 @@ function readPane(target, lines = 100) {
   lastRead.set(target, { time: Date.now(), output });
   const count = output.split("\n").length;
   return `${target} (${count} lines)\n---\n${output}\n---\ntip: use watch for delta`;
+}
+
+function tailPane(target, lines = 20) {
+  const output = run("capture-pane", "-t", target, "-p", "-S", `-${lines}`);
+  if (output === null) return `error: cannot read ${target}`;
+  // return only the last N non-empty lines, no pagination
+  const allLines = output.split("\n");
+  const nonEmpty = allLines.filter((l) => l.trim());
+  const tail = nonEmpty.slice(-lines);
+  lastRead.set(target, { time: Date.now(), output });
+  return `${target} (last ${tail.length} lines)\n---\n${tail.join("\n")}`;
 }
 
 function watchPane(target, lines = 100) {
@@ -539,16 +552,26 @@ function checkInbox() {
   return `${messages.length} new messages:\n${messages.join("\n")}`;
 }
 
+function taskLockPath(taskName) {
+  return `/tmp/tmux_mcp_claim_${taskName}`;
+}
+
 function claimTask(text) {
   const me = getActivePane();
   const myName = me ? (getAgentName(me) || me) : "unknown";
 
-  // check if already claimed
-  const existing = run("show-environment", "-g", `${TASK_PREFIX}${text}`);
-  if (existing && !existing.startsWith("-")) {
-    const eqIdx = existing.indexOf("=");
-    const owner = existing.slice(eqIdx + 1).split("|")[0];
-    if (owner !== myName) return `task "${text}" already claimed by ${owner}`;
+  const lockFile = taskLockPath(text);
+  try {
+    writeFileSync(lockFile, myName, { flag: "wx" }); // atomic — fails if exists
+  } catch {
+    // lock file exists — read owner from it
+    try {
+      const owner = readFileSync(lockFile, "utf-8").trim();
+      if (owner === myName) return `you already claimed: ${text}`;
+      return `task "${text}" already claimed by ${owner}`;
+    } catch {
+      return `task "${text}" already claimed`;
+    }
   }
 
   run("set-environment", "-g", `${TASK_PREFIX}${text}`, `${myName}|${Date.now()}|active`);
@@ -558,6 +581,9 @@ function claimTask(text) {
 function completeTask(text) {
   const me = getActivePane();
   const myName = me ? (getAgentName(me) || me) : "unknown";
+
+  // release the atomic lock file
+  try { unlinkSync(taskLockPath(text)); } catch {}
 
   run("set-environment", "-g", `${TASK_PREFIX}${text}`, `${myName}|${Date.now()}|done`);
   return `completed: ${text}`;
@@ -827,6 +853,7 @@ const HELP_TEXT = `tmux actions:
   list                overview of all sessions (unnamed ones summarized)
   session target      inspect one session with pane previews
   read  target        capture pane output (lines: history depth, default 100)
+  tail  target        last N lines, no pagination (lines: default 20)
   watch target        new output since last read (delta)
   send  target text   key sequences (space-separated tokens)
   type  target text   literal text (preserves spaces)
@@ -868,6 +895,7 @@ call any action without required params for help`;
 const HELP_ACTIONS = {
   session: "session: inspect one session with pane previews\n  params: target (session name)\n  example: action:session target:main",
   read: "read: capture pane output\n  params: target (session:win.pane), lines (default 100)\n  example: action:read target:main:0.0",
+  tail: "tail: last N lines, no pagination — quick look at recent output\n  params: target (session:win.pane), lines (default 20)\n  example: action:tail target:main:0.0 lines:30",
   watch: "watch: delta since last read\n  params: target (session:win.pane), lines (default 100)\n  example: action:watch target:main:0.0",
   send: `send: key sequences (space-separated tokens)
   params: target (session:win.pane), text (keys)
@@ -950,6 +978,9 @@ async function dispatch(action, target, text, lines, commandId, name) {
     case "read":
       if (!target) return HELP_ACTIONS.read;
       return readPane(target, lines);
+    case "tail":
+      if (!target) return HELP_ACTIONS.tail;
+      return tailPane(target, lines);
     case "watch":
       if (!target) return HELP_ACTIONS.watch;
       return watchPane(target, lines);
@@ -1037,7 +1068,7 @@ async function dispatch(action, target, text, lines, commandId, name) {
 // --- server ---
 
 const ALL_ACTIONS = [
-  "list", "session", "read", "watch",
+  "list", "session", "read", "tail", "watch",
   "send", "type", "sendwait", "typewait",
   "exec", "result",
   "new-session", "kill-session", "new-window", "kill-window",
