@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Single-file MCP server (`server.js`, ~1100 lines) for tmux control and cross-session agent coordination. One tool called `tmux` with 26 actions dispatched via an `action` enum parameter. All responses are plain text, paginated at 10 lines.
+Single-file MCP server (`server.js`, ~1100 lines) for tmux control and cross-session agent coordination. One tool called `tmux` with 27 actions dispatched via an `action` enum parameter. All responses are plain text, paginated at 50 lines (newest first).
 
 ## Development
 
@@ -35,6 +35,7 @@ Everything routes through one MCP tool → `dispatch()` switch statement → ind
 | Watch deltas | In-memory `lastRead` Map | No |
 | Worker hooks | `/tmp/claude-mux-{name}/.claude/settings.json` | Cleaned on despawn |
 | Inbox sequence | `/tmp/claude_mux_inbox_{name}` | Cleaned on despawn |
+| Task claim locks | `/tmp/claude_mux_claim_{name}` | Released on complete |
 
 ### Key design patterns
 
@@ -43,6 +44,7 @@ Everything routes through one MCP tool → `dispatch()` switch statement → ind
 - **`sendwait`/`typewait`**: Poll every 500ms. Detect completion via prompt regex or 2s quiesce. 30s timeout ceiling.
 - **Self-awareness**: Reads `$TMUX_PANE` on startup, reports `you are here:` in listings so the model avoids reading its own pane.
 - **Worker spawning**: `spawn`/`spawn-persist`/`teammate` all create a new tmux window, register the agent, inject a coordination preamble, and set up inbox hooks. `spawn` auto-closes; `teammate` stays interactive.
+- **Atomic task claiming**: `claim` uses `O_EXCL` file creation (`writeFileSync` with `wx` flag) so two agents racing for the same task can't both win. `complete` releases the lock.
 
 ### Hooks
 
@@ -50,7 +52,6 @@ Everything routes through one MCP tool → `dispatch()` switch statement → ind
 
 ## Known limitations
 
-- Task claiming (`claim`) is not atomic — two agents can race and both succeed
 - Message sequence numbers derived from `list-buffers` count; high volume could produce collisions
 - Worker hooks overwrite `.claude/settings.json` in the work directory
 - No message cleanup — buffers accumulate until tmux exits
